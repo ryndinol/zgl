@@ -477,10 +477,16 @@ pub const BufferTarget = enum(types.Enum) {
     transform_feedback_buffer = c.GL_TRANSFORM_FEEDBACK_BUFFER,
     /// Uniform block storage
     uniform_buffer = c.GL_UNIFORM_BUFFER,
+    /// Renderbuffer
+    renderbuffer = c.GL_RENDERBUFFER,
 };
 
 pub fn createBuffers(items: []types.Buffer) void {
     c.glCreateBuffers(cs2gl(items.len), @ptrCast([*]types.UInt, items.ptr));
+    checkError();
+}
+pub fn bindBufferBase(buf: types.Buffer, index: usize, target: BufferTarget) void {
+    c.glBindBufferBase(@enumToInt(target), @intCast(types.UInt, index), @enumToInt(buf));
     checkError();
 }
 
@@ -579,6 +585,8 @@ pub const BufferStorageFlags = packed struct {
     map_persistent: bool = false,
     map_coherent: bool = false,
     client_storage: bool = false,
+    map_flush_explicit: bool = false,
+    map_invalidate_buffer: bool = false,
 };
 
 pub fn namedBufferStorage(buf: types.Buffer, comptime T: type, count: usize, items: ?[*]align(1) const T, flags: BufferStorageFlags) void {
@@ -589,6 +597,8 @@ pub fn namedBufferStorage(buf: types.Buffer, comptime T: type, count: usize, ite
     if (flags.map_persistent) flag_bits |= c.GL_MAP_PERSISTENT_BIT;
     if (flags.map_coherent) flag_bits |= c.GL_MAP_COHERENT_BIT;
     if (flags.client_storage) flag_bits |= c.GL_CLIENT_STORAGE_BIT;
+    if (flags.map_flush_explicit) flag_bits |= c.GL_MAP_FLUSH_EXPLICIT_BIT;
+    if (flags.map_invalidate_buffer) flag_bits |= c.GL_MAP_INVALIDATE_BUFFER_BIT;
 
     c.glNamedBufferStorage(
         @enumToInt(buf),
@@ -647,6 +657,8 @@ pub const BufferMapFlags = packed struct {
     write: bool = false,
     persistent: bool = false,
     coherent: bool = false,
+    invalidate_buffer: bool = false,
+    flush_explicit: bool = false,
 };
 
 pub fn mapNamedBufferRange(
@@ -655,12 +667,14 @@ pub fn mapNamedBufferRange(
     offset: usize,
     count: usize,
     flags: BufferMapFlags,
-) []align(1) T {
+) []align(@sizeOf(T)) T {
     var flag_bits: c.GLbitfield = 0;
     if (flags.read) flag_bits |= c.GL_MAP_READ_BIT;
     if (flags.write) flag_bits |= c.GL_MAP_WRITE_BIT;
     if (flags.persistent) flag_bits |= c.GL_MAP_PERSISTENT_BIT;
     if (flags.coherent) flag_bits |= c.GL_MAP_COHERENT_BIT;
+    if (flags.invalidate_buffer) flag_bits |= c.GL_MAP_INVALIDATE_BUFFER_BIT;
+    if (flags.flush_explicit) flag_bits |= c.GL_MAP_FLUSH_EXPLICIT_BIT;
 
     const ptr = c.glMapNamedBufferRange(
         @enumToInt(buf),
@@ -670,8 +684,22 @@ pub fn mapNamedBufferRange(
     );
     checkError();
 
-    const values = @ptrCast([*]align(1) T, ptr);
+    const values = @ptrCast([*]align(@sizeOf(T)) T, @alignCast(@sizeOf(T), ptr));
     return values[0..count];
+}
+
+pub fn flushNamedBufferRange(
+    buf: types.Buffer,
+    comptime T: type,
+    offset: usize,
+    count: usize,
+) void {
+    c.glFlushMappedNamedBufferRange(
+        @enumToInt(buf),
+        @intCast(c.GLintptr, offset),
+        @intCast(c.GLsizeiptr, @sizeOf(T) * count)
+    );
+    checkError();
 }
 
 pub fn unmapNamedBuffer(buf: types.Buffer) bool {
@@ -679,6 +707,49 @@ pub fn unmapNamedBuffer(buf: types.Buffer) bool {
     checkError();
     return ok != 0;
 }
+
+pub fn genRenderbuffers(items: []types.Renderbuffer) void {
+    c.glGenRenderbuffers(cs2gl(items.len), @ptrCast([*]types.UInt, items.ptr));
+    checkError();
+}
+pub fn genRenderbuffer() types.Renderbuffer {
+    var buf: types.Renderbuffer = undefined;
+    genRenderbuffers(@ptrCast([*]types.Renderbuffer, &buf)[0..1]);
+    return buf;
+}
+
+pub fn bindRenderbuffer(buf: types.Renderbuffer, target: BufferTarget) void {
+    c.glBindRenderbuffer(@enumToInt(target), @enumToInt(buf));
+    checkError();
+}
+
+pub fn deleteRenderbuffers(items: []const types.Renderbuffer) void {
+    c.glDeleteRenderbuffers(cs2gl(items.len), @ptrCast([*]const types.UInt, items.ptr));
+}
+
+pub fn deleteRenderbuffer(buf: types.Renderbuffer) void {
+    deleteRenderbuffers(@ptrCast([*]const types.Renderbuffer, &buf)[0..1]);
+}
+
+pub fn renderbufferStorageMultisample(
+    buf: types.Renderbuffer,
+    samples: usize,
+    pixel_internal_format: PixelFormat,
+    width: usize,
+    height: usize,
+) void {
+    // c.glRenderbufferStorageMultisample(
+    c.glNamedRenderbufferStorageMultisample(
+        @enumToInt(buf),
+        @intCast(types.Int, samples),
+        // @intCast(types.UInt, @enumToInt(pixel_internal_format)),
+        @enumToInt(pixel_internal_format),
+        @intCast(types.SizeI, width),
+        @intCast(types.SizeI, height),
+    );
+    checkError();
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // Shaders
@@ -775,6 +846,11 @@ pub fn linkProgram(program: types.Program) void {
     checkError();
 }
 
+pub fn validateProgram(program: types.Program) void {
+    c.glValidateProgram(@enumToInt(program));
+    checkError();
+}
+
 pub fn attachShader(program: types.Program, shader: types.Shader) void {
     c.glAttachShader(@enumToInt(program), @enumToInt(shader));
     checkError();
@@ -820,7 +896,15 @@ pub fn getProgram(program: types.Program, parameter: ProgramParameter) types.Int
     return value;
 }
 
-pub fn getProgramInfoLog(program: types.Program, allocator: std.mem.Allocator) ![:0]const u8 {
+//pub fn getProgramInfoLog(program: types.Program, allocator: std.mem.Allocator) ![:0]const u8 {
+pub fn getProgramInfoLog(program: types.Program, log: anytype) void{
+    const length = getProgram(program, .info_log_length);
+
+    c.glGetProgramInfoLog(@enumToInt(program), length, null, log);
+    checkError();
+}
+
+pub fn getProgramInfoLogTODO(program: types.Program, allocator: std.mem.Allocator) ![:0]const u8 {
     const length = getProgram(program, .info_log_length);
     const log = try allocator.allocSentinel(u8, @intCast(usize, length), 0);
     errdefer allocator.free(log);
@@ -834,8 +918,10 @@ pub fn getProgramInfoLog(program: types.Program, allocator: std.mem.Allocator) !
 pub fn getUniformLocation(program: types.Program, name: [:0]const u8) ?u32 {
     const loc = c.glGetUniformLocation(@enumToInt(program), name.ptr);
     checkError();
-    if (loc < 0)
+    if (loc < 0) {
+        std.debug.print("getUniformLocation failed! {s}\n", .{name});
         return null;
+    }
     return @intCast(u32, loc);
 }
 
@@ -1123,18 +1209,29 @@ pub fn uniform4i64(location: ?u32, v0: i64, v1: i64, v2: i64, v3: i64) void {
     }
 }
 
-pub fn uniformMatrix4fv(location: ?u32, transpose: bool, items: []const [4][4]f32) void {
-    if (location) |loc| {
-        c.glUniformMatrix4fv(
-            @intCast(types.Int, loc),
-            cs2gl(items.len),
-            b2gl(transpose),
+// pub fn uniformMatrix4fv(location: ?u32, transpose: bool, items: []const [4][4]f32) void {
+//     if (location) |loc| {
+//         c.glUniformMatrix4fv(
+//             @intCast(types.Int, loc),
+//             cs2gl(items.len),
+//             b2gl(transpose),
 
-            @ptrCast(*const f32, items.ptr),
-        );
+//             @ptrCast(*const f32, items.ptr),
+//         );
+//         checkError();
+//     }
+// }
+
+
+
+// //pub fn uniformMatrix4fv(location: ?u32, transpose: bool, items: []const [4][4]f32) void {
+pub fn uniformMatrix4fv(location: ?u32, transpose: bool, items: anytype) void {
+    if (location) |loc| {
+        c.glUniformMatrix4fv(@intCast(types.Int, loc), cs2gl(items.len/16), b2gl(transpose), @ptrCast(*const f32, items));
         checkError();
     }
 }
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // Draw Calls
@@ -1629,6 +1726,7 @@ pub const PixelFormat = enum(types.Enum) {
     rgba = c.GL_RGBA,
     bgra = c.GL_BGRA,
     depth_component = c.GL_DEPTH_COMPONENT,
+    depth_stencil = c.GL_DEPTH_STENCIL,
     stencil_index = c.GL_STENCIL_INDEX,
     luminance = c.GL_LUMINANCE,
 
@@ -1638,6 +1736,9 @@ pub const PixelFormat = enum(types.Enum) {
     bgr_integer = c.GL_BGR_INTEGER,
     rgba_integer = c.GL_RGBA_INTEGER,
     bgra_integer = c.GL_BGRA_INTEGER,
+
+    // TODO: Different enum for depth buffer format???
+    depth24_stencil8 = c.GL_DEPTH24_STENCIL8,
 };
 
 pub const PixelType = enum(types.Enum) {
@@ -1660,6 +1761,7 @@ pub const PixelType = enum(types.Enum) {
     unsigned_int_8_8_8_8_rev = c.GL_UNSIGNED_INT_8_8_8_8_REV,
     unsigned_int_10_10_10_2 = c.GL_UNSIGNED_INT_10_10_10_2,
     unsigned_int_2_10_10_10_rev = c.GL_UNSIGNED_INT_2_10_10_10_REV,
+    unsigned_int_24_8 = c.GL_UNSIGNED_INT_24_8,
 };
 
 pub fn textureImage2D(
@@ -1685,6 +1787,26 @@ pub fn textureImage2D(
     );
     checkError();
 }
+
+pub fn textureImage2DMultisample(
+    texture: TextureTarget,
+    samples: usize,
+    pixel_internal_format: PixelFormat,
+    width: usize,
+    height: usize,
+    fixed_sample_locations: bool,
+) void {
+    c.glTexImage2DMultisample(
+        @enumToInt(texture),
+        @intCast(types.Int, samples),
+        @intCast(types.UInt, @enumToInt(pixel_internal_format)),
+        @intCast(types.SizeI, width),
+        @intCast(types.SizeI, height),
+        @boolToInt(fixed_sample_locations),
+    );
+    checkError();
+}
+
 
 pub fn texSubImage2D(
     textureTarget: TextureTarget,
@@ -1802,6 +1924,8 @@ pub fn scissor(x: i32, y: i32, width: usize, height: usize) void {
 
 pub const FramebufferTarget = enum(types.Enum) {
     buffer = c.GL_FRAMEBUFFER,
+    read = c.GL_READ_FRAMEBUFFER,
+    draw = c.GL_DRAW_FRAMEBUFFER,
 };
 
 pub const Framebuffer = enum(types.UInt) {
@@ -1848,6 +1972,22 @@ pub fn bindFrameBuffer(buf: Framebuffer, target: FramebufferTarget) void {
     checkError();
 }
 
+pub fn blitFrameBuffer(
+    srcx0: i32, srcy0: i32, srcx1: i32, srcy1: i32,
+    dstx0: i32, dsty0: i32, dstx1: i32, dsty1: i32,
+    mask: struct { color: bool = false, depth: bool = false, stencil: bool = false },
+    filter: enum(types.UInt) {
+            nearest = c.GL_NEAREST,
+            linear = c.GL_LINEAR,
+    },) void {
+    c.glBlitFramebuffer(srcx0, srcy0, srcx1, srcy1, dstx0, dsty0, dstx1, dsty1,
+        @as(types.BitField, if (mask.color) c.GL_COLOR_BUFFER_BIT else 0) |
+        @as(types.BitField, if (mask.depth) c.GL_DEPTH_BUFFER_BIT else 0) |
+        @as(types.BitField, if (mask.stencil) c.GL_STENCIL_BUFFER_BIT else 0),
+        @enumToInt(filter));
+    checkError();
+}
+
 pub const FramebufferAttachment = enum(types.Enum) {
     color0 = c.GL_COLOR_ATTACHMENT0,
     color1 = c.GL_COLOR_ATTACHMENT1,
@@ -1885,11 +2025,20 @@ pub const FramebufferTextureTarget = enum(types.Enum) {
     buffer = c.GL_TEXTURE_BUFFER,
     @"2d_multisample" = c.GL_TEXTURE_2D_MULTISAMPLE,
     @"2d_multisample_array" = c.GL_TEXTURE_2D_MULTISAMPLE_ARRAY,
+
+    // TODO: Different enum???
+    renderbuffer = c.GL_RENDERBUFFER,
 };
 
 pub fn framebufferTexture2D(buffer: Framebuffer, target: FramebufferTarget, attachment: FramebufferAttachment, textarget: FramebufferTextureTarget, texture: types.Texture, level: i32) void {
     buffer.bind(.buffer);
     c.glFramebufferTexture2D(@enumToInt(target), @enumToInt(attachment), @enumToInt(textarget), @intCast(types.UInt, @enumToInt(texture)), @intCast(types.Int, level));
+    checkError();
+}
+
+pub fn framebufferRenderbuffer(buffer: Framebuffer, target: FramebufferTarget, attachment: FramebufferAttachment, textarget: FramebufferTextureTarget, renderbuffer: types.Renderbuffer) void {
+    buffer.bind(.buffer);
+    c.glFramebufferRenderbuffer(@enumToInt(target), @enumToInt(attachment), @enumToInt(textarget), @intCast(types.UInt, @enumToInt(renderbuffer)));
     checkError();
 }
 
@@ -2123,4 +2272,9 @@ pub fn hasExtension(extension: [:0]const u8) bool {
         }
     }
     return false;
+}
+
+// TODO: Is this needed?
+pub fn finish() void {
+    c.glFinish();
 }

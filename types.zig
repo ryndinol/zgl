@@ -55,11 +55,27 @@ pub const Buffer = enum(UInt) {
     pub const create = gl.createBuffer;
     pub const gen = gl.genBuffer;
     pub const bind = gl.bindBuffer;
+    pub const bindBase = gl.bindBufferBase;
     pub const delete = gl.deleteBuffer;
     pub const data = gl.namedBufferData;
     pub const storage = gl.namedBufferStorage;
     pub const mapRange = gl.mapNamedBufferRange;
+    pub const flushRange = gl.flushNamedBufferRange;
     pub const unmap = gl.unmapNamedBuffer;
+};
+pub const Renderbuffer = enum(UInt) {
+    invalid = 0,
+    _,
+
+    // pub const create = createRenderbuffer;
+    pub const gen = gl.genRenderbuffer;
+    pub const bind = gl.bindRenderbuffer;
+    pub const delete = gl.deleteRenderbuffer;
+    // pub const data = namedRenderbufferData;
+    // pub const storage = namedRenderbufferStorage;
+    // pub const mapRange = mapNamedRenderbufferRange;
+    // pub const flushRange = flushNamedRenderbufferRange;
+    // pub const unmap = unmapNamedRenderbuffer;
 };
 
 pub const Shader = enum(UInt) {
